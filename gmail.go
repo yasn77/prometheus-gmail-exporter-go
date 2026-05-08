@@ -208,7 +208,11 @@ func (tm *TokenManager) Refresh() error {
 
 	if tm.tokenPath != "" {
 		if err := saveToken(tm.tokenPath, newToken); err != nil {
-			return fmt.Errorf("failed to save refreshed token: %w", err)
+			// Token refresh succeeded but persistence failed (e.g., read-only filesystem).
+			// This is non-fatal — the refreshed token remains valid in memory.
+			// On the next pod restart, the token will be loaded from the Secret
+			// and automatically refreshed again.
+			log.Printf("Warning: token refreshed but could not be persisted to %s: %v", tm.tokenPath, err)
 		}
 	}
 
