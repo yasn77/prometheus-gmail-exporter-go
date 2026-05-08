@@ -11,6 +11,10 @@ Heavily inspired by [jamesread/prometheus-gmail-exporter](https://github.com/jam
 - [Metrics](#metrics)
 - [Prerequisites](#prerequisites)
 - [Configuration](#configuration)
+  - [Config File](#config-file)
+  - [How Labels Work](#how-labels-work)
+  - [What Is NOT Supported](#what-is-not-supported)
+  - [Environment Variables](#environment-variables)
 - [Running Locally](#running-locally)
 - [Running with Docker](#running-with-docker)
 - [Running with Docker Compose](#running-with-docker-compose)
@@ -78,6 +82,58 @@ labels:
 
 - `interval` - scrape interval in seconds (must be greater than 0)
 - `labels` - list of Gmail label names to monitor (must not be empty)
+
+#### How Labels Work
+
+The `labels` field controls **which Gmail labels** are queried. Only Gmail labels that actually exist in your account are monitored. Common built-in labels include:
+
+| Label | Description |
+|-------|-------------|
+| `INBOX` | Primary inbox |
+| `SENT` | Sent messages |
+| `TRASH` | Deleted messages |
+| `SPAM` | Spam folder |
+| `DRAFT` | Draft messages |
+| `UNREAD` | All unread messages |
+| `STARRED` | Starred messages |
+| `IMPORTANT` | Messages marked as important |
+
+You can also use any **custom labels** you have created in Gmail (e.g., `Work`, `Personal`, `Receipts`).
+
+#### Label Matching Behaviour
+
+At startup the exporter fetches the full list of labels from the Gmail API. It then matches the names in your `config.yml` against this list. Labels that do not exist in your account are silently ignored — no error is raised. Each matched label produces two metrics:
+
+- `gmail_threads_total{Label="gmail_<label_name>"}`
+- `gmail_threads_unread{Label="gmail_<label_name>"}`
+
+The label name is converted to snake_case for the Prometheus label value (e.g., `INBOX` becomes `gmail_inbox`, `My Custom Label` becomes `gmail_my_custom_label`).
+
+#### Multiple Labels Example
+
+```yaml
+---
+interval: 300
+labels:
+  - INBOX
+  - SENT
+  - SPAM
+  - Work
+  - Receipts
+```
+
+This will produce metrics for all five labels (assuming `Work` and `Receipts` exist in your Gmail account).
+
+#### What Is NOT Supported
+
+The exporter does **not** support Gmail search queries. You cannot filter by sender, subject, date range, or any other criteria. For example, the following are **not possible**:
+
+- Count threads from a specific sender (`from:boss@company.com`)
+- Count unread messages newer than 7 days
+- Count messages matching a subject line
+- Any query using Gmail's search operators
+
+The exporter only exposes the total thread count and unread thread count for each configured label, exactly as reported by the Gmail API.
 
 ### Environment Variables
 
