@@ -93,7 +93,7 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign image with Cosign
         run: |
@@ -101,8 +101,6 @@ jobs:
             --annotation commit=${{ github.sha }} \
             --annotation version=${{ github.ref_name }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
-        env:
-          COSIGN_EXPERIMENTAL: "true"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v7
