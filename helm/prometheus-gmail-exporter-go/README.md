@@ -68,9 +68,20 @@ helm uninstall prometheus-gmail-exporter-go --namespace monitoring
 | `gmail.credentials.clientSecret` | string | `nil` | Inline OAuth2 client secret (not recommended) |
 | `gmail.token.tokenJson` | string | `nil` | Inline OAuth2 token JSON (not recommended) |
 | `serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor CRD |
-| `prometheusRule.enabled` | bool | `false` | Create a PrometheusRule CRD |
+| `prometheusRule.enabled` | bool | `false` | Create a PrometheusRule CRD with default alerts |
 | `livenessProbe` | object | See `values.yaml` | Liveness probe configuration |
 | `readinessProbe` | object | See `values.yaml` | Readiness probe configuration |
+
+### Default Alerts
+
+When `prometheusRule.enabled=true`, the chart creates a `PrometheusRule` with the following alerts:
+
+| Alert | Severity | Description |
+|-------|----------|-------------|
+| `GmailExporterDown` | critical | Gmail API connectivity lost |
+| `GmailTokenExpiringSoon` | warning | Access token expires within 5 minutes |
+| `GmailTokenRefreshFailed` | warning | Token refresh errors in the last hour |
+| `GmailScrapeStale` | critical | No successful scrape in 10 minutes |
 
 ## Security
 

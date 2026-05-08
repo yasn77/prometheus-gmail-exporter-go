@@ -20,6 +20,7 @@ Heavily inspired by [jamesread/prometheus-gmail-exporter](https://github.com/jam
 - [Running with Docker Compose](#running-with-docker-compose)
 - [Running on Kubernetes](#running-on-kubernetes)
 - [GCP Setup](#gcp-setup)
+- [Alerting](#alerting)
 - [Security Considerations](#security-considerations)
 - [Development](#development)
 - [License](#license)
@@ -47,18 +48,33 @@ Metrics are scraped by Prometheus from the `/metrics` endpoint and can be visual
 
 ## Metrics
 
+### Gmail Metrics
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `gmail_threads_total` | Gauge | `Label` | Total number of threads per label |
 | `gmail_threads_unread` | Gauge | `Label` | Number of unread threads per label |
 | `gmail_scrape_errors_total` | Counter | none | Total number of Gmail scrape errors |
 | `gmail_scrape_success_total` | Counter | none | Total number of successful Gmail scrapes |
+| `gmail_connectivity_up` | Gauge | none | Gmail API connectivity status (`1`=connected, `0`=disconnected) |
+| `gmail_last_scrape_timestamp` | Gauge | none | Unix timestamp of the last successful Gmail scrape |
+| `gmail_token_expires_in_seconds` | Gauge | none | Seconds until Gmail access token expires |
+| `gmail_token_refresh_errors_total` | Counter | `reason` | Total number of OAuth2 token refresh failures |
+
+### Application Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `app_info` | Gauge | `version`, `commit`, `build_date` | Application build information (always `1`) |
+| `app_start_time_seconds` | Gauge | none | Unix timestamp when the application started |
 
 Example:
 
 ```
 gmail_threads_total{Label="gmail_inbox"} 42
 gmail_threads_unread{Label="gmail_inbox"} 5
+gmail_connectivity_up 1
+gmail_token_expires_in_seconds 3420
 ```
 
 ## Prerequisites
@@ -260,6 +276,42 @@ See the [Helm chart README](./helm/prometheus-gmail-exporter-go/README.md) for f
     Once complete, the token is saved to `token.json`.
 
 13. For production deployments, use the `GMAIL_OAUTH_TOKEN` environment variable or a mounted secret via `TOKEN_SECRET_PATH` instead of the local `token.json` file.
+
+## Alerting
+
+The exporter exposes several metrics designed for Prometheus alerting. The included Helm chart can optionally deploy a `PrometheusRule` CRD (`--set prometheusRule.enabled=true`).
+
+### Recommended Alerts
+
+| Alert | Expression | Severity | Description |
+|-------|-----------|----------|-------------|
+| **GmailExporterDown** | `gmail_connectivity_up == 0` | critical | Gmail API connectivity lost |
+| **GmailTokenExpiringSoon** | `gmail_token_expires_in_seconds < 300` | warning | Access token expires within 5 minutes |
+| **GmailTokenRefreshFailed** | `increase(gmail_token_refresh_errors_total[1h]) > 0` | warning | Token refresh errors in the last hour |
+| **GmailScrapeStale** | `time() - gmail_last_scrape_timestamp > 600` | critical | No successful scrape in 10 minutes |
+
+### Example PrometheusRule
+
+```yaml
+groups:
+  - name: gmail-exporter
+    rules:
+      - alert: GmailExporterDown
+        expr: gmail_connectivity_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gmail Exporter lost connectivity"
+
+      - alert: GmailTokenExpiringSoon
+        expr: gmail_token_expires_in_seconds < 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gmail access token expiring soon"
+```
 
 ## Security Considerations
 

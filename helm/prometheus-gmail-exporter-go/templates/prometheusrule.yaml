@@ -9,5 +9,39 @@ spec:
   groups:
     - name: {{ include "prometheus-gmail-exporter-go.fullname" . }}
       rules:
+        - alert: GmailExporterDown
+          expr: gmail_connectivity_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Gmail Exporter lost connectivity"
+            description: "Gmail exporter {{`{{ $labels.instance }}`}} has lost connectivity to Gmail API"
+        - alert: GmailTokenExpiringSoon
+          expr: gmail_token_expires_in_seconds < 300
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Gmail access token expiring soon"
+            description: "Gmail access token will expire in {{`{{ $value }}`}} seconds"
+        - alert: GmailTokenRefreshFailed
+          expr: increase(gmail_token_refresh_errors_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Gmail token refresh failures detected"
+            description: "{{`{{ $value }}`}} token refresh errors in the last hour"
+        - alert: GmailScrapeStale
+          expr: time() - gmail_last_scrape_timestamp > 600
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Gmail exporter scrape is stale"
+            description: "No successful scrape in the last 10 minutes"
+        {{- if .Values.prometheusRule.rules }}
         {{- toYaml .Values.prometheusRule.rules | nindent 8 }}
+        {{- end }}
 {{- end }}
