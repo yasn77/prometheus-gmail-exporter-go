@@ -1,0 +1,122 @@
+# Default values for prometheus-gmail-exporter-go.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/yasn77/prometheus-gmail-exporter-go
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 2112
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+config:
+  interval: 300
+  labels:
+    - "INBOX"
+
+# ------------------------------------------------------------------------------
+# Gmail OAuth2 Credentials
+# ------------------------------------------------------------------------------
+# WARNING: It is strongly recommended to use an existing Kubernetes Secret for
+# Gmail credentials. Inline values are commented out by default and should only
+# be used for local testing. Never commit secrets to version control.
+# ------------------------------------------------------------------------------
+gmailCredentials:
+  # Name of an existing Secret containing credentials.json
+  existingSecret: ""
+  # Inline OAuth2 client credentials (NOT recommended for production)
+  # clientId: ""
+  # clientSecret: ""
+
+# ------------------------------------------------------------------------------
+# Gmail OAuth2 Token
+# ------------------------------------------------------------------------------
+# WARNING: It is strongly recommended to use an existing Kubernetes Secret for
+# the OAuth2 token. Inline values are commented out by default and should only
+# be used for local testing. Never commit secrets to version control.
+# ------------------------------------------------------------------------------
+gmailToken:
+  # Name of an existing Secret containing token.json
+  existingSecret: ""
+  # Inline OAuth2 token JSON (NOT recommended for production)
+  # tokenJson: ""
+
+# Extra environment variables to inject into the container
+env: []
+
+serviceMonitor:
+  # When set to true, a ServiceMonitor CRD is created for Prometheus Operator
+  enabled: false
+  interval: 300s
+  labels: {}
+
+prometheusRule:
+  # When set to true, a PrometheusRule CRD is created for Prometheus Operator
+  enabled: false
+  rules: []
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# Additional volumes on the output Deployment definition.
+extraVolumes: []
+
+# Additional volumeMounts on the output Deployment definition.
+extraVolumeMounts: []

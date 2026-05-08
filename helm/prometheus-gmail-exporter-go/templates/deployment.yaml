@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "prometheus-gmail-exporter-go.fullname" . }}
+  labels:
+    {{- include "prometheus-gmail-exporter-go.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "prometheus-gmail-exporter-go.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "prometheus-gmail-exporter-go.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "prometheus-gmail-exporter-go.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: CONFIG_PATH
+              value: "/etc/prometheus-gmail-exporter-go/config.yml"
+            - name: GMAIL_CREDENTIALS_PATH
+              value: "/etc/prometheus-gmail-exporter-go/credentials.json"
+            - name: TOKEN_SECRET_PATH
+              value: "/etc/prometheus-gmail-exporter-go/token.json"
+            - name: LISTEN_ADDRESS
+              value: "0.0.0.0:2112"
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 2112
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus-gmail-exporter-go/config.yml
+              subPath: config.yml
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/prometheus-gmail-exporter-go/credentials.json
+              subPath: credentials.json
+              readOnly: true
+            - name: token
+              mountPath: /etc/prometheus-gmail-exporter-go/token.json
+              subPath: token.json
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "prometheus-gmail-exporter-go.fullname" . }}-config
+        - name: credentials
+          secret:
+            secretName: {{ if .Values.gmailCredentials.existingSecret }}{{ .Values.gmailCredentials.existingSecret }}{{ else }}{{ include "prometheus-gmail-exporter-go.fullname" . }}-credentials{{ end }}
+        - name: token
+          secret:
+            secretName: {{ if .Values.gmailToken.existingSecret }}{{ .Values.gmailToken.existingSecret }}{{ else }}{{ include "prometheus-gmail-exporter-go.fullname" . }}-token{{ end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

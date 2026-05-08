@@ -1,0 +1,13 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "prometheus-gmail-exporter-go.fullname" . }}
+  labels:
+    {{- include "prometheus-gmail-exporter-go.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: {{ include "prometheus-gmail-exporter-go.fullname" . }}
+      rules:
+        {{- toYaml .Values.prometheusRule.rules | nindent 8 }}
+{{- end }}

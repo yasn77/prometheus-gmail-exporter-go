@@ -18,7 +18,7 @@ secrets/
 *~
 
 # Build artifacts
-prometheus-gmail-exporter-go
+/prometheus-gmail-exporter-go
 dist/
 build/
 *.exe
