@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -894,15 +896,61 @@ func TestGetClientMissingToken(t *testing.T) {
 	config := &oauth2.Config{
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
-		Endpoint:     oauth2.Endpoint{TokenURL: "http://localhost/token"},
-		RedirectURL:  "http://localhost/callback",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://localhost:1/auth",
+			TokenURL: "http://localhost:1/token",
+		},
+		RedirectURL: "http://localhost/callback",
 	}
 
-	// With no token file, it will try to get token from web which reads from stdin
-	// This is hard to test, so we'll just verify it returns an error
-	_, err := getClient(config, "/nonexistent/token.json")
-	if err == nil {
-		t.Error("Expected error when token file is missing and stdin is not available")
+	// Capture stdout to read the auth URL
+	oldStdout := os.Stdout
+	stdoutR, stdoutW, _ := os.Pipe()
+	os.Stdout = stdoutW
+
+	type result struct {
+		client *http.Client
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		client, err := getClient(config, "/nonexistent/token.json")
+		resultCh <- result{client, err}
+	}()
+
+	// Simulate callback with wrong state to trigger an error
+	scanner := bufio.NewScanner(stdoutR)
+	var authURLStr string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "http") {
+			authURLStr = line
+			break
+		}
+	}
+	if authURLStr == "" {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatal("could not find auth URL in output")
+	}
+	authURL, _ := url.Parse(authURLStr)
+	redirectURI := authURL.Query().Get("redirect_uri")
+	callbackURL := redirectURI + "?state=wrong-state&code=invalid-code"
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatalf("Failed to make callback request: %v", err)
+	}
+	resp.Body.Close()
+
+	os.Stdout = oldStdout
+	stdoutW.Close()
+	io.Copy(io.Discard, stdoutR)
+
+	res := <-resultCh
+	if res.err == nil {
+		t.Error("Expected error when token file is missing and callback has invalid state")
 	}
 }
 
@@ -1417,48 +1465,50 @@ func TestGetTokenFromWebSuccess(t *testing.T) {
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://localhost:1/auth",
 			TokenURL: ts.URL,
 		},
 		RedirectURL: "http://localhost/callback",
 	}
 
-	// Mock stdin with auth code
-	oldStdin := os.Stdin
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stdin = r
-
-	// Write auth code in background
-	go func() {
-		w.WriteString("mock-auth-code\n")
-		w.Close()
-	}()
-
-	// Capture stdout to suppress output
+	// Capture stdout to read the auth URL
 	oldStdout := os.Stdout
 	stdoutR, stdoutW, _ := os.Pipe()
 	os.Stdout = stdoutW
 
-	tok, err := getTokenFromWeb(config)
+	type result struct {
+		tok *oauth2.Token
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		tok, err := getTokenFromWeb(config)
+		resultCh <- result{tok, err}
+	}()
+
+	// Simulate the OAuth callback
+	if err := simulateOAuthCallback(stdoutR, "mock-auth-code"); err != nil {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatalf("simulateOAuthCallback failed: %v", err)
+	}
 
 	os.Stdout = oldStdout
 	stdoutW.Close()
 	io.Copy(io.Discard, stdoutR)
-	os.Stdin = oldStdin
 
-	if err != nil {
-		t.Fatalf("getTokenFromWeb failed: %v", err)
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("getTokenFromWeb failed: %v", res.err)
 	}
-	if tok == nil {
+	if res.tok == nil {
 		t.Fatal("Expected token but got nil")
 	}
-	if tok.AccessToken != "mock-access-token" {
-		t.Errorf("AccessToken mismatch: got %q, want %q", tok.AccessToken, "mock-access-token")
+	if res.tok.AccessToken != "mock-access-token" {
+		t.Errorf("AccessToken mismatch: got %q, want %q", res.tok.AccessToken, "mock-access-token")
 	}
-	if tok.TokenType != "Bearer" {
-		t.Errorf("TokenType mismatch: got %q, want %q", tok.TokenType, "Bearer")
+	if res.tok.TokenType != "Bearer" {
+		t.Errorf("TokenType mismatch: got %q, want %q", res.tok.TokenType, "Bearer")
 	}
 }
 
@@ -1468,36 +1518,60 @@ func TestGetTokenFromWebInvalidAuthCode(t *testing.T) {
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://localhost:1/auth",
 			TokenURL: "http://localhost:1/token", // Invalid URL that will fail
 		},
 		RedirectURL: "http://localhost/callback",
 	}
 
-	// Mock stdin with invalid auth code
-	oldStdin := os.Stdin
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stdin = r
-
-	go func() {
-		w.WriteString("invalid-code\n")
-		w.Close()
-	}()
-
+	// Capture stdout to read the auth URL
 	oldStdout := os.Stdout
 	stdoutR, stdoutW, _ := os.Pipe()
 	os.Stdout = stdoutW
 
-	_, err = getTokenFromWeb(config)
+	type result struct {
+		tok *oauth2.Token
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		tok, err := getTokenFromWeb(config)
+		resultCh <- result{tok, err}
+	}()
+
+	// Simulate callback with a mismatched state to trigger an error
+	scanner := bufio.NewScanner(stdoutR)
+	var authURLStr string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "http") {
+			authURLStr = line
+			break
+		}
+	}
+	if authURLStr == "" {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatal("could not find auth URL in output")
+	}
+	authURL, _ := url.Parse(authURLStr)
+	redirectURI := authURL.Query().Get("redirect_uri")
+	// Use wrong state to trigger error
+	callbackURL := redirectURI + "?state=wrong-state&code=invalid-code"
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatalf("Failed to make callback request: %v", err)
+	}
+	resp.Body.Close()
 
 	os.Stdout = oldStdout
 	stdoutW.Close()
 	io.Copy(io.Discard, stdoutR)
-	os.Stdin = oldStdin
 
-	if err == nil {
+	res := <-resultCh
+	if res.err == nil {
 		t.Error("Expected error for invalid auth code")
 	}
 }
@@ -1521,6 +1595,7 @@ func TestGetClientWithWebAuth(t *testing.T) {
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://localhost:1/auth",
 			TokenURL: ts.URL,
 		},
 		RedirectURL: "http://localhost/callback",
@@ -1533,34 +1608,37 @@ func TestGetClientWithWebAuth(t *testing.T) {
 	}
 	os.Remove(tmpfile.Name()) // Delete it so tokenFromFile fails
 
-	// Mock stdin with auth code
-	oldStdin := os.Stdin
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stdin = r
-
-	go func() {
-		w.WriteString("mock-auth-code\n")
-		w.Close()
-	}()
-
+	// Capture stdout to read the auth URL
 	oldStdout := os.Stdout
 	stdoutR, stdoutW, _ := os.Pipe()
 	os.Stdout = stdoutW
 
-	client, err := getClient(config, tmpfile.Name())
+	type result struct {
+		client *http.Client
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		client, err := getClient(config, tmpfile.Name())
+		resultCh <- result{client, err}
+	}()
 
+	// Simulate the OAuth callback
+	if err := simulateOAuthCallback(stdoutR, "mock-auth-code"); err != nil {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatalf("simulateOAuthCallback failed: %v", err)
+	}
+
+	res := <-resultCh
 	os.Stdout = oldStdout
 	stdoutW.Close()
 	io.Copy(io.Discard, stdoutR)
-	os.Stdin = oldStdin
 
-	if err != nil {
-		t.Fatalf("getClient failed: %v", err)
+	if res.err != nil {
+		t.Fatalf("getClient failed: %v", res.err)
 	}
-	if client == nil {
+	if res.client == nil {
 		t.Fatal("Expected client but got nil")
 	}
 

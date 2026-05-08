@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -67,20 +68,60 @@ func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following link in your browser then type the "+
-		"authorization code: \n%v\n", authURL)
-
-	var authCode string
-	if _, err := fmt.Scan(&authCode); err != nil {
-		return nil, fmt.Errorf("unable to read authorization code: %w", err)
-	}
-
-	tok, err := config.Exchange(context.TODO(), authCode)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("unable to retrieve token from web: %w", err)
+		return nil, fmt.Errorf("failed to start local redirect server: %w", err)
 	}
-	return tok, nil
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	srv := &http.Server{Handler: mux}
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			http.Error(w, "Invalid state parameter", http.StatusBadRequest)
+			errCh <- fmt.Errorf("invalid state parameter in OAuth callback")
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			http.Error(w, "Authorization code not found", http.StatusBadRequest)
+			errCh <- fmt.Errorf("authorization code not found in callback")
+			return
+		}
+		fmt.Fprintf(w, "<h1>Authorization Successful</h1><p>You can close this window and return to the terminal.</p>")
+		codeCh <- code
+	})
+
+	go func() {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("local redirect server error: %w", err)
+		}
+	}()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+
+	redirectURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	config.RedirectURL = redirectURL
+	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	fmt.Printf("Open the following URL in your browser to authorize the application:\n%v\n\nWaiting for authorization...\n", authURL)
+
+	select {
+	case code := <-codeCh:
+		tok, err := config.Exchange(context.TODO(), code)
+		if err != nil {
+			return nil, fmt.Errorf("unable to retrieve token from web: %w", err)
+		}
+		return tok, nil
+	case err := <-errCh:
+		return nil, err
+	}
 }
 
 func tokenFromFile(file string) (*oauth2.Token, error) {

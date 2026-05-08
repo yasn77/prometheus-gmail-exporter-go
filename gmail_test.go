@@ -1,11 +1,13 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -302,45 +304,44 @@ func TestGetTokenFromWebRandomState(t *testing.T) {
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://localhost:1/auth",
 			TokenURL: ts.URL,
 		},
 		RedirectURL: "http://localhost/callback",
 	}
 
-	// Mock stdin with auth code
-	oldStdin := os.Stdin
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stdin = r
-
-	go func() {
-		w.WriteString("mock-auth-code\n")
-		w.Close()
-	}()
-
-	// Capture stdout to inspect the auth URL
+	// Capture stdout to read the auth URL
 	oldStdout := os.Stdout
 	stdoutR, stdoutW, _ := os.Pipe()
 	os.Stdout = stdoutW
 
-	_, err = getTokenFromWeb(config)
+	type result struct {
+		tok *oauth2.Token
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		tok, err := getTokenFromWeb(config)
+		resultCh <- result{tok, err}
+	}()
+
+	// Simulate the OAuth callback
+	if err := simulateOAuthCallback(stdoutR, "mock-auth-code"); err != nil {
+		os.Stdout = oldStdout
+		stdoutW.Close()
+		t.Fatalf("simulateOAuthCallback failed: %v", err)
+	}
 
 	os.Stdout = oldStdout
 	stdoutW.Close()
-	os.Stdin = oldStdin
+	io.Copy(io.Discard, stdoutR)
 
-	if err != nil {
-		t.Fatalf("getTokenFromWeb failed: %v", err)
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("getTokenFromWeb failed: %v", res.err)
 	}
-
-	var buf bytes.Buffer
-	io.Copy(&buf, stdoutR)
-	output := buf.String()
-
-	if !strings.Contains(output, "state=") {
-		t.Errorf("Expected auth URL to contain state parameter, got:\n%s", output)
+	if res.tok == nil {
+		t.Fatal("Expected token but got nil")
 	}
 }
 
@@ -414,4 +415,34 @@ func oauth2MockServer(t *testing.T) *httptest.Server {
 		}
 		json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+// simulateOAuthCallback reads the auth URL printed by getTokenFromWeb and makes
+// the corresponding HTTP callback to the local redirect server.
+func simulateOAuthCallback(stdoutR *os.File, code string) error {
+	scanner := bufio.NewScanner(stdoutR)
+	var authURLStr string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "http") {
+			authURLStr = line
+			break
+		}
+	}
+	if authURLStr == "" {
+		return fmt.Errorf("could not find auth URL in output")
+	}
+	authURL, err := url.Parse(authURLStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse auth URL: %w", err)
+	}
+	state := authURL.Query().Get("state")
+	redirectURI := authURL.Query().Get("redirect_uri")
+	callbackURL := redirectURI + "?state=" + state + "&code=" + code
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		return fmt.Errorf("failed to make callback request: %w", err)
+	}
+	defer resp.Body.Close()
+	return nil
 }
