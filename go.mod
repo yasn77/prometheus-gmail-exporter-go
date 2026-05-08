@@ -1,6 +1,6 @@
 module github.com/richardtowers/prometheus-gmail-exporter-go
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/iancoleman/strcase v0.3.0
