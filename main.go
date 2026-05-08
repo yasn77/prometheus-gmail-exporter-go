@@ -17,6 +17,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 type Config struct {
 	Interval int      `yaml:"interval"`
 	Labels   []string `yaml:"labels"`
@@ -60,7 +66,7 @@ func matchLabels(labels []*gmail.Label, desired []string) []string {
 	return labelIds
 }
 
-func scrapeMetrics(unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service) error {
+func scrapeMetrics(unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service, lastScrapeTimestamp prometheus.Gauge, connectivityGauge prometheus.Gauge) error {
 	for _, labelId := range labelIds {
 		label, err := srv.Users.Labels.Get("me", labelId).Do()
 		if err != nil {
@@ -70,10 +76,16 @@ func scrapeMetrics(unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.Gaug
 		totalGauge.With(prometheusLabels).Set(float64(label.ThreadsTotal))
 		unreadGauge.With(prometheusLabels).Set(float64(label.ThreadsUnread))
 	}
+	if lastScrapeTimestamp != nil {
+		lastScrapeTimestamp.Set(float64(time.Now().Unix()))
+	}
+	if connectivityGauge != nil {
+		connectivityGauge.Set(1)
+	}
 	return nil
 }
 
-func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service, stopCh <-chan struct{}, scrapeErrors prometheus.Counter, scrapeSuccess prometheus.Counter) {
+func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service, stopCh <-chan struct{}, scrapeErrors prometheus.Counter, scrapeSuccess prometheus.Counter, lastScrapeTimestamp prometheus.Gauge, connectivityGauge prometheus.Gauge) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
@@ -89,9 +101,12 @@ func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *p
 						}
 					}()
 					fmt.Printf("scraping %d labels\n", len(labelIds))
-					if err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv); err != nil {
+					if err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv, lastScrapeTimestamp, connectivityGauge); err != nil {
 						fmt.Printf("%v\n", err)
 						scrapeErrors.Inc()
+						if connectivityGauge != nil {
+							connectivityGauge.Set(0)
+						}
 					} else {
 						scrapeSuccess.Inc()
 					}
@@ -158,13 +173,88 @@ func isLocalhost(addr string) bool {
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
-func run(configPath, credentialsPath string, srvFn func(string) (*gmail.Service, error)) error {
+func run(configPath, credentialsPath string, srvFn func(string, prometheus.Gauge, *prometheus.CounterVec) (*gmail.Service, error)) error {
 	config, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
 
-	srv, err := srvFn(credentialsPath)
+	// Create metrics before starting the Gmail service so they can be passed to TokenManager
+	unreadGauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gmail_threads_unread",
+			Help: "number of unread threads",
+		},
+		[]string{"Label"},
+	)
+	totalGauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gmail_threads_total",
+			Help: "total number of threads",
+		},
+		[]string{"Label"},
+	)
+	scrapeErrors := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gmail_scrape_errors_total",
+			Help: "Total number of Gmail scrape errors",
+		},
+	)
+	scrapeSuccess := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gmail_scrape_success_total",
+			Help: "Total number of successful Gmail scrapes",
+		},
+	)
+	connectivityGauge := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gmail_connectivity_up",
+			Help: "Gmail API connectivity status (1=connected, 0=disconnected)",
+		},
+	)
+	lastScrapeTimestamp := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gmail_last_scrape_timestamp",
+			Help: "Unix timestamp of the last successful Gmail scrape",
+		},
+	)
+	tokenExpiryGauge := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gmail_token_expires_in_seconds",
+			Help: "Seconds until Gmail access token expires",
+		},
+	)
+	tokenRefreshErrors := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gmail_token_refresh_errors_total",
+			Help: "Total number of OAuth2 token refresh failures",
+		},
+		[]string{"reason"},
+	)
+	appInfo := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "app_info",
+			Help: "Application build information",
+		},
+		[]string{"version", "commit", "build_date"},
+	)
+	appStartTime := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "app_start_time_seconds",
+			Help: "Unix timestamp when the application started",
+		},
+	)
+
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(unreadGauge, totalGauge, scrapeErrors, scrapeSuccess,
+		connectivityGauge, lastScrapeTimestamp, tokenExpiryGauge, tokenRefreshErrors,
+		appInfo, appStartTime)
+
+	appInfo.WithLabelValues(Version, Commit, BuildDate).Set(1)
+	appStartTime.Set(float64(time.Now().Unix()))
+	connectivityGauge.Set(1)
+
+	srv, err := srvFn(credentialsPath, tokenExpiryGauge, tokenRefreshErrors)
 	if err != nil {
 		return err
 	}
@@ -201,37 +291,8 @@ func run(configPath, credentialsPath string, srvFn func(string) (*gmail.Service,
 		return fmt.Errorf("none of the configured labels were found in the Gmail account")
 	}
 
-	unreadGauge := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "gmail_threads_unread",
-			Help: "number of unread threads",
-		},
-		[]string{"Label"},
-	)
-	totalGauge := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "gmail_threads_total",
-			Help: "total number of threads",
-		},
-		[]string{"Label"},
-	)
-	scrapeErrors := prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "gmail_scrape_errors_total",
-			Help: "Total number of Gmail scrape errors",
-		},
-	)
-	scrapeSuccess := prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "gmail_scrape_success_total",
-			Help: "Total number of successful Gmail scrapes",
-		},
-	)
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(unreadGauge, totalGauge, scrapeErrors, scrapeSuccess)
-
 	stopCh := make(chan struct{})
-	recordMetrics(config.Interval, unreadGauge, totalGauge, labelIds, srv, stopCh, scrapeErrors, scrapeSuccess)
+	recordMetrics(config.Interval, unreadGauge, totalGauge, labelIds, srv, stopCh, scrapeErrors, scrapeSuccess, lastScrapeTimestamp, connectivityGauge)
 
 	addr := "127.0.0.1:2112"
 	if envAddr := os.Getenv("LISTEN_ADDRESS"); envAddr != "" {

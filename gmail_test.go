@@ -111,7 +111,7 @@ func TestTokenManagerCreation(t *testing.T) {
 		TokenType:   "Bearer",
 	}
 
-	tm := NewTokenManager(config, token, "/tmp/token.json")
+	tm := NewTokenManager(config, token, "/tmp/token.json", nil, nil)
 	if tm == nil {
 		t.Fatal("Expected TokenManager but got nil")
 	}
@@ -126,7 +126,7 @@ func TestTokenManagerGetTokenThreadSafe(t *testing.T) {
 	config := &oauth2.Config{}
 	token := &oauth2.Token{AccessToken: "initial"}
 
-	tm := NewTokenManager(config, token, "")
+	tm := NewTokenManager(config, token, "", nil, nil)
 
 	// Concurrent reads should not race
 	done := make(chan struct{})
@@ -163,7 +163,7 @@ func TestTokenManagerRefresh(t *testing.T) {
 		Expiry:       time.Now().Add(-time.Hour), // expired
 	}
 
-	tm := NewTokenManager(config, initialToken, "")
+	tm := NewTokenManager(config, initialToken, "", nil, nil)
 	err := tm.Refresh()
 	if err != nil {
 		t.Fatalf("Refresh failed: %v", err)
@@ -203,7 +203,7 @@ func TestTokenManagerRefreshAndSave(t *testing.T) {
 		Expiry:       time.Now().Add(-time.Hour),
 	}
 
-	tm := NewTokenManager(config, initialToken, tmpfile.Name())
+	tm := NewTokenManager(config, initialToken, tmpfile.Name(), nil, nil)
 	err = tm.Refresh()
 	if err != nil {
 		t.Fatalf("Refresh failed: %v", err)
@@ -237,7 +237,7 @@ func TestTokenManagerRefreshWithoutTokenPath(t *testing.T) {
 		Expiry:       time.Now().Add(-time.Hour),
 	}
 
-	tm := NewTokenManager(config, initialToken, "")
+	tm := NewTokenManager(config, initialToken, "", nil, nil)
 	err := tm.Refresh()
 	if err != nil {
 		t.Fatalf("Refresh failed: %v", err)
@@ -267,7 +267,7 @@ func TestTokenManagerStartStop(t *testing.T) {
 		Expiry:       time.Now().Add(-time.Hour), // expired
 	}
 
-	tm := NewTokenManager(config, initialToken, "")
+	tm := NewTokenManager(config, initialToken, "", nil, nil)
 	tm.Start()
 
 	// Allow goroutine to start

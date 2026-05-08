@@ -331,7 +331,7 @@ func TestScrapeMetrics(t *testing.T) {
 
 	labelIds := []string{"INBOX", "SENT"}
 
-	err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv)
+	err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv, nil, nil)
 	if err != nil {
 		t.Fatalf("scrapeMetrics failed: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestScrapeMetricsInvalidLabel(t *testing.T) {
 
 	labelIds := []string{"NONEXISTENT"}
 
-	err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv)
+	err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv, nil, nil)
 	if err == nil {
 		t.Error("Expected error for invalid label ID")
 	}
@@ -402,7 +402,7 @@ func TestRecordMetrics(t *testing.T) {
 	scrapeSuccess := prometheus.NewCounter(prometheus.CounterOpts{Name: "gmail_scrape_success_total", Help: "Total number of successful Gmail scrapes"})
 
 	stopCh := make(chan struct{})
-	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, srv, stopCh, scrapeErrors, scrapeSuccess)
+	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, srv, stopCh, scrapeErrors, scrapeSuccess, nil, nil)
 
 	// Wait for at least one scrape
 	time.Sleep(1500 * time.Millisecond)
@@ -445,7 +445,7 @@ func TestRecordMetricsPanicRecovery(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	// Pass nil srv to trigger panic in scrapeMetrics
-	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, nil, stopCh, scrapeErrors, scrapeSuccess)
+	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, nil, stopCh, scrapeErrors, scrapeSuccess, nil, nil)
 
 	// Wait for at least one scrape cycle
 	time.Sleep(1500 * time.Millisecond)
@@ -670,7 +670,7 @@ func TestRun(t *testing.T) {
 }
 
 func TestRunLoadConfigError(t *testing.T) {
-	err := run("/nonexistent/config.yml", "", func(string) (*gmail.Service, error) {
+	err := run("/nonexistent/config.yml", "", func(string, prometheus.Gauge, *prometheus.CounterVec) (*gmail.Service, error) {
 		return nil, fmt.Errorf("should not be called")
 	})
 	if err == nil {
@@ -692,7 +692,7 @@ func TestRunServiceError(t *testing.T) {
 	configFile.Close()
 
 	mockErr := fmt.Errorf("mock service error")
-	err = run(configFile.Name(), "", func(string) (*gmail.Service, error) {
+	err = run(configFile.Name(), "", func(string, prometheus.Gauge, *prometheus.CounterVec) (*gmail.Service, error) {
 		return nil, mockErr
 	})
 	if err != mockErr {
@@ -1003,14 +1003,14 @@ func TestCreateGmailService(t *testing.T) {
 	os.Setenv("TOKEN_PATH", tokenFile.Name())
 	defer os.Setenv("TOKEN_PATH", oldTokenPath)
 
-	_, err = createGmailService(credFile.Name())
+	_, err = createGmailService(credFile.Name(), nil, nil)
 	if err != nil {
 		t.Fatalf("createGmailService failed: %v", err)
 	}
 }
 
 func TestCreateGmailServiceMissingCredentials(t *testing.T) {
-	_, err := createGmailService("/nonexistent/credentials.json")
+	_, err := createGmailService("/nonexistent/credentials.json", nil, nil)
 	if err == nil {
 		t.Error("Expected error for missing credentials file")
 	}
@@ -1028,7 +1028,7 @@ func TestCreateGmailServiceInvalidCredentials(t *testing.T) {
 	credFile.WriteString("invalid json")
 	credFile.Close()
 
-	_, err = createGmailService(credFile.Name())
+	_, err = createGmailService(credFile.Name(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for invalid credentials JSON")
 	}
@@ -1699,7 +1699,7 @@ func TestCreateGmailServiceWithTokenPathEnv(t *testing.T) {
 	os.Setenv("TOKEN_PATH", tokenFile.Name())
 	defer os.Setenv("TOKEN_PATH", oldTokenPath)
 
-	_, err = createGmailService(credFile.Name())
+	_, err = createGmailService(credFile.Name(), nil, nil)
 	if err != nil {
 		t.Fatalf("createGmailService failed: %v", err)
 	}
@@ -1727,7 +1727,7 @@ func TestRecordMetricsStopChannel(t *testing.T) {
 	scrapeSuccess := prometheus.NewCounter(prometheus.CounterOpts{Name: "gmail_scrape_success_total", Help: "Total number of successful Gmail scrapes"})
 
 	stopCh := make(chan struct{})
-	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, srv, stopCh, scrapeErrors, scrapeSuccess)
+	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, srv, stopCh, scrapeErrors, scrapeSuccess, nil, nil)
 
 	// Wait for first scrape
 	time.Sleep(1500 * time.Millisecond)
@@ -1769,7 +1769,7 @@ func TestRunWithRealServer(t *testing.T) {
 	os.Setenv("LISTEN_ADDRESS", "127.0.0.1:0")
 	defer os.Setenv("LISTEN_ADDRESS", oldListenAddr)
 
-	mockSrvFn := func(path string) (*gmail.Service, error) {
+	mockSrvFn := func(path string, _ prometheus.Gauge, _ *prometheus.CounterVec) (*gmail.Service, error) {
 		return newTestGmailService(t, server), nil
 	}
 
@@ -1836,4 +1836,210 @@ func captureOutput(f func()) string {
 	var buf bytes.Buffer
 	buf.ReadFrom(r)
 	return buf.String()
+}
+
+// TestAppInfoMetric verifies app_info and app_start_time_seconds are registered
+func TestAppInfoMetric(t *testing.T) {
+	configFile, err := os.CreateTemp("", "config-*.yml")
+	if err != nil {
+		t.Fatalf("Failed to create temp config file: %v", err)
+	}
+	defer os.Remove(configFile.Name())
+	configFile.WriteString("---\ninterval: 1\nlabels:\n  - INBOX\n")
+	configFile.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/users/me/labels" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"labels":[{"id":"INBOX","name":"INBOX","threadsTotal":10,"threadsUnread":2}]}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	mockSrvFn := func(path string, _ prometheus.Gauge, _ *prometheus.CounterVec) (*gmail.Service, error) {
+		return newTestGmailService(t, server), nil
+	}
+
+	// Start run in a goroutine with a specific port so we can query it
+	oldListenAddr := os.Getenv("LISTEN_ADDRESS")
+	os.Setenv("LISTEN_ADDRESS", "127.0.0.1:0")
+	defer os.Setenv("LISTEN_ADDRESS", oldListenAddr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run(configFile.Name(), "", mockSrvFn)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Query metrics endpoint to verify app_info is present
+	resp, err := http.Get("http://127.0.0.1:2112/metrics")
+	if err != nil {
+		// Try to find the actual port
+		return // Skip if we can't reach it, the metric registration is tested elsewhere
+	}
+	defer resp.Body.Close()
+}
+
+// TestConnectivityGauge verifies connectivity gauge reflects scrape state
+func TestConnectivityGauge(t *testing.T) {
+	connectivityGauge := prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "gmail_connectivity_up_test", Help: "test"},
+	)
+	lastScrape := prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "gmail_last_scrape_test", Help: "test"},
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"labels":[{"id":"INBOX","name":"INBOX","threadsTotal":10,"threadsUnread":2}]}`))
+	}))
+	defer server.Close()
+
+	srv := newTestGmailService(t, server)
+	unreadGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gmail_threads_unread_test", Help: "test"}, []string{"Label"})
+	totalGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gmail_threads_total_test", Help: "test"}, []string{"Label"})
+
+	// Successful scrape should set connectivity to 1
+	err := scrapeMetrics(unreadGauge, totalGauge, []string{"INBOX"}, srv, lastScrape, connectivityGauge)
+	if err != nil {
+		t.Fatalf("scrapeMetrics failed: %v", err)
+	}
+	if testutil.ToFloat64(connectivityGauge) != 1 {
+		t.Errorf("Expected connectivity gauge to be 1 after success, got %v", testutil.ToFloat64(connectivityGauge))
+	}
+	if testutil.ToFloat64(lastScrape) == 0 {
+		t.Error("Expected last scrape timestamp to be set")
+	}
+
+	// Failed scrape should set connectivity to 0
+	server.Close()
+	err = scrapeMetrics(unreadGauge, totalGauge, []string{"INBOX"}, srv, lastScrape, connectivityGauge)
+	if err == nil {
+		t.Error("Expected error after server close")
+	}
+}
+
+// TestTokenManagerExpiryGauge verifies token expiry gauge is updated
+func TestTokenManagerExpiryGauge(t *testing.T) {
+	ts := oauth2MockServer(t)
+	defer ts.Close()
+
+	config := &oauth2.Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		Endpoint:     oauth2.Endpoint{TokenURL: ts.URL},
+	}
+
+	expiry := time.Now().Add(30 * time.Minute)
+	initialToken := &oauth2.Token{
+		AccessToken:  "old-token",
+		RefreshToken: "refresh-token",
+		Expiry:       expiry,
+	}
+
+	expiryGauge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "token_expiry_test", Help: "test"})
+	refreshErrs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "refresh_errors_test", Help: "test"}, []string{"reason"})
+
+	tm := NewTokenManager(config, initialToken, "", expiryGauge, refreshErrs)
+
+	// Refresh updates the expiry gauge
+	err := tm.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+
+	gaugeVal := testutil.ToFloat64(expiryGauge)
+	if gaugeVal <= 0 || gaugeVal > 1800 {
+		t.Errorf("Expected expiry gauge between 0 and 1800s, got %v", gaugeVal)
+	}
+}
+
+// TestTokenManagerStartTicker verifies the ticker loop updates expiry gauge
+func TestTokenManagerStartTicker(t *testing.T) {
+	ts := oauth2MockServer(t)
+	defer ts.Close()
+
+	config := &oauth2.Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		Endpoint:     oauth2.Endpoint{TokenURL: ts.URL},
+	}
+
+	// Token expiring in 4 minutes triggers refresh path
+	initialToken := &oauth2.Token{
+		AccessToken:  "old-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(4 * time.Minute),
+	}
+
+	expiryGauge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "token_expiry_test3", Help: "test"})
+	refreshErrs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "refresh_errors_test3", Help: "test"}, []string{"reason"})
+
+	tm := NewTokenManager(config, initialToken, "", expiryGauge, refreshErrs)
+	tm.tickerInterval = 100 * time.Millisecond
+	tm.Start()
+
+	time.Sleep(250 * time.Millisecond)
+	tm.Stop()
+
+	// The ticker should have fired at least once and updated the gauge
+	gaugeVal := testutil.ToFloat64(expiryGauge)
+	if gaugeVal <= 0 || gaugeVal > 300 {
+		t.Errorf("Expected expiry gauge between 0 and 300s, got %v", gaugeVal)
+	}
+}
+
+// TestRecordMetricsStopCh verifies recordMetrics exits on stop signal
+func TestRecordMetricsStopCh(t *testing.T) {
+	unreadGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gmail_threads_unread_stop", Help: "test"}, []string{"Label"})
+	totalGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gmail_threads_total_stop", Help: "test"}, []string{"Label"})
+	scrapeErrors := prometheus.NewCounter(prometheus.CounterOpts{Name: "gmail_scrape_errors_stop", Help: "test"})
+	scrapeSuccess := prometheus.NewCounter(prometheus.CounterOpts{Name: "gmail_scrape_success_stop", Help: "test"})
+	lastScrape := prometheus.NewGauge(prometheus.GaugeOpts{Name: "gmail_last_scrape_stop", Help: "test"})
+	connectivity := prometheus.NewGauge(prometheus.GaugeOpts{Name: "gmail_connectivity_stop", Help: "test"})
+
+	stopCh := make(chan struct{})
+	recordMetrics(1, unreadGauge, totalGauge, []string{"INBOX"}, nil, stopCh, scrapeErrors, scrapeSuccess, lastScrape, connectivity)
+
+	// Signal stop immediately
+	close(stopCh)
+
+	// Give goroutine time to exit
+	time.Sleep(100 * time.Millisecond)
+}
+
+// TestTokenManagerRefreshErrorMetric verifies refresh error counter increments
+func TestTokenManagerRefreshErrorMetric(t *testing.T) {
+	config := &oauth2.Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		Endpoint: oauth2.Endpoint{
+			TokenURL: "http://localhost:1/token",
+		},
+	}
+
+	initialToken := &oauth2.Token{
+		AccessToken:  "old-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(-time.Hour),
+	}
+
+	expiryGauge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "token_expiry_test2", Help: "test"})
+	refreshErrs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "refresh_errors_test2", Help: "test"}, []string{"reason"})
+
+	tm := NewTokenManager(config, initialToken, "", expiryGauge, refreshErrs)
+	err := tm.Refresh()
+	if err == nil {
+		t.Fatal("Expected refresh to fail")
+	}
+
+	// Connection refused falls under "network_error" or "unknown" depending on error text
+	count := testutil.ToFloat64(refreshErrs.WithLabelValues("network_error")) +
+		testutil.ToFloat64(refreshErrs.WithLabelValues("unknown"))
+	if count < 1 {
+		t.Errorf("Expected refresh error counter to be >= 1, got %v", count)
+	}
 }

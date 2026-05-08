@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
@@ -148,21 +150,26 @@ func saveToken(path string, token *oauth2.Token) error {
 // TokenManager handles OAuth2 token lifecycle with thread-safe access
 // and background refresh.
 type TokenManager struct {
-	config    *oauth2.Config
-	token     *oauth2.Token
-	tokenPath string
-	mu        sync.RWMutex
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
+	config           *oauth2.Config
+	token            *oauth2.Token
+	tokenPath        string
+	mu               sync.RWMutex
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
+	tokenExpiryGauge prometheus.Gauge
+	refreshErrors    *prometheus.CounterVec
+	tickerInterval   time.Duration // test override, defaults to 0 (uses time.Minute)
 }
 
 // NewTokenManager creates a new TokenManager.
-func NewTokenManager(config *oauth2.Config, token *oauth2.Token, tokenPath string) *TokenManager {
+func NewTokenManager(config *oauth2.Config, token *oauth2.Token, tokenPath string, tokenExpiryGauge prometheus.Gauge, refreshErrors *prometheus.CounterVec) *TokenManager {
 	return &TokenManager{
-		config:    config,
-		token:     token,
-		tokenPath: tokenPath,
-		stopCh:    make(chan struct{}),
+		config:           config,
+		token:            token,
+		tokenPath:        tokenPath,
+		stopCh:           make(chan struct{}),
+		tokenExpiryGauge: tokenExpiryGauge,
+		refreshErrors:    refreshErrors,
 	}
 }
 
@@ -183,6 +190,17 @@ func (tm *TokenManager) Refresh() error {
 	ts := tm.config.TokenSource(ctx, tm.token)
 	newToken, err := ts.Token()
 	if err != nil {
+		reason := "unknown"
+		if strings.Contains(err.Error(), "invalid_grant") {
+			reason = "invalid_grant"
+		} else if strings.Contains(err.Error(), "unauthorized_client") {
+			reason = "unauthorized_client"
+		} else if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "connection refused") {
+			reason = "network_error"
+		}
+		if tm.refreshErrors != nil {
+			tm.refreshErrors.WithLabelValues(reason).Inc()
+		}
 		return fmt.Errorf("failed to refresh token: %w", err)
 	}
 
@@ -191,6 +209,14 @@ func (tm *TokenManager) Refresh() error {
 	if tm.tokenPath != "" {
 		if err := saveToken(tm.tokenPath, newToken); err != nil {
 			return fmt.Errorf("failed to save refreshed token: %w", err)
+		}
+	}
+
+	if tm.tokenExpiryGauge != nil {
+		if !newToken.Expiry.IsZero() {
+			tm.tokenExpiryGauge.Set(float64(time.Until(newToken.Expiry).Seconds()))
+		} else {
+			tm.tokenExpiryGauge.Set(0)
 		}
 	}
 
@@ -203,7 +229,11 @@ func (tm *TokenManager) Start() {
 	tm.wg.Add(1)
 	go func() {
 		defer tm.wg.Done()
-		ticker := time.NewTicker(time.Minute)
+		interval := time.Minute
+		if tm.tickerInterval > 0 {
+			interval = tm.tickerInterval
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
@@ -211,7 +241,16 @@ func (tm *TokenManager) Start() {
 			case <-ticker.C:
 				tm.mu.RLock()
 				needsRefresh := !tm.token.Expiry.IsZero() && tm.token.Expiry.Before(time.Now().Add(5*time.Minute))
+				expiry := tm.token.Expiry
 				tm.mu.RUnlock()
+
+				if tm.tokenExpiryGauge != nil {
+					if !expiry.IsZero() {
+						tm.tokenExpiryGauge.Set(float64(time.Until(expiry).Seconds()))
+					} else {
+						tm.tokenExpiryGauge.Set(0)
+					}
+				}
 
 				if needsRefresh {
 					if err := tm.Refresh(); err != nil {
@@ -231,7 +270,7 @@ func (tm *TokenManager) Stop() {
 	tm.wg.Wait()
 }
 
-func createGmailService(credentialsPath string) (*gmail.Service, error) {
+func createGmailService(credentialsPath string, tokenExpiryGauge prometheus.Gauge, tokenRefreshErrors *prometheus.CounterVec) (*gmail.Service, error) {
 	ctx := context.Background()
 	b, err := os.ReadFile(credentialsPath)
 	if err != nil {
@@ -265,7 +304,7 @@ func createGmailService(credentialsPath string) (*gmail.Service, error) {
 		}
 	}
 
-	tm := NewTokenManager(config, tok, tokenPath)
+	tm := NewTokenManager(config, tok, tokenPath, tokenExpiryGauge, tokenRefreshErrors)
 	tm.Start()
 
 	client := config.Client(ctx, tm.GetToken())
