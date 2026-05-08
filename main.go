@@ -174,7 +174,32 @@ func run(configPath, credentialsPath string, srvFn func(string) (*gmail.Service,
 		return err
 	}
 
+	log.Printf("Discovered %d Gmail labels:", len(labels))
+	for _, lab := range labels {
+		log.Printf("  - %s (id=%s)", lab.Name, lab.Id)
+	}
+
 	labelIds := matchLabels(labels, config.Labels)
+
+	log.Printf("Configured to monitor %d label(s):", len(config.Labels))
+	for _, name := range config.Labels {
+		found := false
+		for _, lab := range labels {
+			if lab.Name == name {
+				found = true
+				break
+			}
+		}
+		if found {
+			log.Printf("  - %s (following)", name)
+		} else {
+			log.Printf("  - %s (not found in account, skipping)", name)
+		}
+	}
+
+	if len(labelIds) == 0 {
+		return fmt.Errorf("none of the configured labels were found in the Gmail account")
+	}
 
 	unreadGauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
