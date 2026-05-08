@@ -154,13 +154,22 @@ Place your `credentials.json` in a `secrets/` directory and your `config.yml` in
 
 ## Running on Kubernetes
 
-Deploy using the included Helm chart:
+Deploy using the included Helm chart. First create a Secret containing both `credentials.json` and `token.json`:
 
 ```bash
-helm install prometheus-gmail-exporter ./helm/prometheus-gmail-exporter-go
+kubectl create secret generic gmail-auth \
+  --from-file=credentials.json=./credentials.json \
+  --from-file=token.json=./token.json
 ```
 
-Store the OAuth2 token in a Kubernetes secret and reference it via `TOKEN_SECRET_PATH` or `GMAIL_OAUTH_TOKEN`.
+Then install the chart:
+
+```bash
+helm install prometheus-gmail-exporter ./helm/prometheus-gmail-exporter-go \
+  --set gmail.existingSecret.name=gmail-auth
+```
+
+See the [Helm chart README](./helm/prometheus-gmail-exporter-go/README.md) for full configuration options.
 
 ## GCP Setup
 

@@ -60,11 +60,11 @@ spec:
               mountPath: /etc/prometheus-gmail-exporter-go/config.yml
               subPath: config.yml
               readOnly: true
-            - name: credentials
+            - name: gmail-auth
               mountPath: /etc/prometheus-gmail-exporter-go/credentials.json
               subPath: credentials.json
               readOnly: true
-            - name: token
+            - name: gmail-auth
               mountPath: /etc/prometheus-gmail-exporter-go/token.json
               subPath: token.json
               readOnly: true
@@ -75,12 +75,18 @@ spec:
         - name: config
           configMap:
             name: {{ include "prometheus-gmail-exporter-go.fullname" . }}-config
-        - name: credentials
+        - name: gmail-auth
           secret:
-            secretName: {{ if .Values.gmailCredentials.existingSecret }}{{ .Values.gmailCredentials.existingSecret }}{{ else }}{{ include "prometheus-gmail-exporter-go.fullname" . }}-credentials{{ end }}
-        - name: token
-          secret:
-            secretName: {{ if .Values.gmailToken.existingSecret }}{{ .Values.gmailToken.existingSecret }}{{ else }}{{ include "prometheus-gmail-exporter-go.fullname" . }}-token{{ end }}
+            {{- if .Values.gmail.existingSecret.name }}
+            secretName: {{ .Values.gmail.existingSecret.name }}
+            {{- else }}
+            secretName: {{ include "prometheus-gmail-exporter-go.fullname" . }}-gmail-auth
+            {{- end }}
+            items:
+              - key: {{ .Values.gmail.existingSecret.credentialsKey | default "credentials.json" }}
+                path: credentials.json
+              - key: {{ .Values.gmail.existingSecret.tokenKey | default "token.json" }}
+                path: token.json
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

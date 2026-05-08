@@ -10,26 +10,23 @@ A Helm chart for deploying the [Prometheus Gmail Exporter](https://github.com/ya
 
 ## Install
 
-Create the namespace and secrets first:
+Create a single Kubernetes Secret containing both `credentials.json` and `token.json`:
 
 ```bash
 kubectl create namespace monitoring
-kubectl create secret generic gmail-credentials \
+kubectl create secret generic gmail-auth \
   --from-file=credentials.json=./credentials.json \
-  --namespace monitoring
-kubectl create secret generic gmail-token \
   --from-file=token.json=./token.json \
   --namespace monitoring
 ```
 
-Install the chart:
+Install the chart, referencing the existing secret:
 
 ```bash
 helm install prometheus-gmail-exporter-go \
   ./helm/prometheus-gmail-exporter-go \
   --namespace monitoring \
-  --set gmailCredentials.existingSecret=gmail-credentials \
-  --set gmailToken.existingSecret=gmail-token \
+  --set gmail.existingSecret.name=gmail-auth \
   --set serviceMonitor.enabled=true
 ```
 
@@ -39,8 +36,7 @@ helm install prometheus-gmail-exporter-go \
 helm upgrade prometheus-gmail-exporter-go \
   ./helm/prometheus-gmail-exporter-go \
   --namespace monitoring \
-  --set gmailCredentials.existingSecret=gmail-credentials \
-  --set gmailToken.existingSecret=gmail-token
+  --set gmail.existingSecret.name=gmail-auth
 ```
 
 ## Uninstall
@@ -65,8 +61,12 @@ helm uninstall prometheus-gmail-exporter-go --namespace monitoring
 | `resources` | object | See `values.yaml` | CPU/memory resources |
 | `config.interval` | int | `300` | Scraping interval in seconds |
 | `config.labels` | list | `["INBOX"]` | Gmail labels to monitor |
-| `gmailCredentials.existingSecret` | string | `""` | Existing secret with `credentials.json` |
-| `gmailToken.existingSecret` | string | `""` | Existing secret with `token.json` |
+| `gmail.existingSecret.name` | string | `""` | Existing secret containing both credentials and token |
+| `gmail.existingSecret.credentialsKey` | string | `"credentials.json"` | Key in the secret for credentials.json |
+| `gmail.existingSecret.tokenKey` | string | `"token.json"` | Key in the secret for token.json |
+| `gmail.credentials.clientId` | string | `nil` | Inline OAuth2 client ID (not recommended) |
+| `gmail.credentials.clientSecret` | string | `nil` | Inline OAuth2 client secret (not recommended) |
+| `gmail.token.tokenJson` | string | `nil` | Inline OAuth2 token JSON (not recommended) |
 | `serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor CRD |
 | `prometheusRule.enabled` | bool | `false` | Create a PrometheusRule CRD |
 | `livenessProbe` | object | See `values.yaml` | Liveness probe configuration |

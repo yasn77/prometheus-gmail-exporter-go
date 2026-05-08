@@ -61,31 +61,46 @@ config:
     - "INBOX"
 
 # ------------------------------------------------------------------------------
-# Gmail OAuth2 Credentials
+# Gmail OAuth2 Configuration
 # ------------------------------------------------------------------------------
 # WARNING: It is strongly recommended to use an existing Kubernetes Secret for
-# Gmail credentials. Inline values are commented out by default and should only
-# be used for local testing. Never commit secrets to version control.
+# Gmail credentials and tokens. Inline values are commented out by default and
+# should only be used for local testing. Never commit secrets to version control.
+#
+# Create a Secret containing both credentials.json and token.json:
+#   kubectl create secret generic gmail-auth \
+#     --from-file=credentials.json=./credentials.json \
+#     --from-file=token.json=./token.json
+#
+# Then configure:
+#   gmail:
+#     existingSecret:
+#       name: gmail-auth
+#       credentialsKey: credentials.json
+#       tokenKey: token.json
+#
+# Alternatively, for testing only, uncomment and set inline values below.
+# The chart will create a Secret for you.
 # ------------------------------------------------------------------------------
-gmailCredentials:
-  # Name of an existing Secret containing credentials.json
-  existingSecret: ""
-  # Inline OAuth2 client credentials (NOT recommended for production)
-  # clientId: ""
-  # clientSecret: ""
+gmail:
+  existingSecret:
+    # Name of an existing Secret containing both credentials and token
+    name: ""
+    # Key within the secret holding the credentials.json data
+    credentialsKey: "credentials.json"
+    # Key within the secret holding the token.json data
+    tokenKey: "token.json"
 
-# ------------------------------------------------------------------------------
-# Gmail OAuth2 Token
-# ------------------------------------------------------------------------------
-# WARNING: It is strongly recommended to use an existing Kubernetes Secret for
-# the OAuth2 token. Inline values are commented out by default and should only
-# be used for local testing. Never commit secrets to version control.
-# ------------------------------------------------------------------------------
-gmailToken:
-  # Name of an existing Secret containing token.json
-  existingSecret: ""
+  # Inline OAuth2 client credentials (NOT recommended for production)
+  # Uncomment and set these values for chart-managed Secret creation.
+  credentials:
+    # clientId: ""
+    # clientSecret: ""
+
   # Inline OAuth2 token JSON (NOT recommended for production)
-  # tokenJson: ""
+  # Uncomment and set this value for chart-managed Secret creation.
+  # token:
+  #   tokenJson: ""
 
 # Extra environment variables to inject into the container
 env: []
