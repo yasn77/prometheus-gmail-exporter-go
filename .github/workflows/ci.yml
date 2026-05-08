@@ -98,8 +98,6 @@ jobs:
       - name: Sign image with Cosign
         run: |
           cosign sign --yes \
-            --annotation commit=${{ github.sha }} \
-            --annotation version=${{ github.ref_name }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
 
       - name: Upload SBOM artifact
