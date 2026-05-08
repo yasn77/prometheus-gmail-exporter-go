@@ -1,0 +1,27 @@
+[tools]
+golang = "1.23"
+
+[tasks]
+# Run all tests with race detection and coverage
+test = "go test -v -race -coverprofile=coverage.out ./..."
+
+# Build the binary
+build = "go build -v -o prometheus-gmail-exporter-go ./..."
+
+# Run go vet for static analysis
+vet = "go vet ./..."
+
+# Run tests and build (CI-style check)
+check = { depends = ["vet", "test", "build"] }
+
+# Build Docker image
+image = "docker build -t prometheus-gmail-exporter-go:latest ."
+
+# Build and tag Docker image with version
+image-tag = "docker build -t prometheus-gmail-exporter-go:latest -t prometheus-gmail-exporter-go:$MISE_IMAGE_TAG ."
+
+# Run the application locally
+run = "go run ."
+
+# Clean build artifacts
+clean = "rm -f prometheus-gmail-exporter-go coverage.out"
