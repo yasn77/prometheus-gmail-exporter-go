@@ -231,14 +231,18 @@ See the [Helm chart README](./helm/prometheus-gmail-exporter-go/README.md) for f
 
 1. Create a project in the [Google Cloud Console](https://console.cloud.google.com/).
 2. Enable the **Gmail API**.
-3. Go to **APIs & Services > Credentials**.
-4. Click **Create Credentials > OAuth client ID**.
-5. For **Application type**, select **Desktop app**.
-6. Enter a name and click **Create**.
-7. Download the client credentials as `credentials.json`.
-8. Run the exporter locally once to perform the interactive OAuth flow. The exporter will prompt you to visit an authorisation URL and paste the authorisation code.
-9. After authorisation, the token is saved to `token.json`.
-10. For production deployments, use the `GMAIL_OAUTH_TOKEN` environment variable or a mounted secret via `TOKEN_SECRET_PATH` instead of the local `token.json` file.
+3. Go to **APIs & Services > OAuth consent screen**.
+4. Choose **External** (or **Internal** if using a Google Workspace organisation) and click **Create**.
+5. Fill in the required fields (App name, User support email, Developer contact email) and click **Save and Continue** through the remaining pages, then click **Back to Dashboard**.
+6. On the OAuth consent screen, click **Audience**, then under **Test users** click **Add users** and add the Google account(s) you will use with the exporter.
+7. Go to **APIs & Services > Credentials**.
+8. Click **Create Credentials > OAuth client ID**.
+9. For **Application type**, select **Desktop app**.
+10. Enter a name and click **Create**.
+11. Download the client credentials as `credentials.json`.
+12. Run the exporter locally once to perform the interactive OAuth flow. The exporter will prompt you to visit an authorisation URL and paste the authorisation code.
+13. After authorisation, the token is saved to `token.json`.
+14. For production deployments, use the `GMAIL_OAUTH_TOKEN` environment variable or a mounted secret via `TOKEN_SECRET_PATH` instead of the local `token.json` file.
 
 ## Security Considerations
 
