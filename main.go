@@ -2,15 +2,17 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/iancoleman/strcase"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
 	"google.golang.org/api/gmail/v1"
 	"gopkg.in/yaml.v3"
 )
@@ -22,7 +24,7 @@ type Config struct {
 
 func loadConfig(path string) (Config, error) {
 	var config Config
-	configFile, err := ioutil.ReadFile(path)
+	configFile, err := os.ReadFile(path)
 	if err != nil {
 		return config, fmt.Errorf("could not read config file: %w", err)
 	}
@@ -32,6 +34,13 @@ func loadConfig(path string) (Config, error) {
 		return config, fmt.Errorf("could not parse config file: %w", err)
 	}
 
+	if config.Interval <= 0 {
+		return config, fmt.Errorf("interval must be greater than 0, got %d", config.Interval)
+	}
+	if len(config.Labels) == 0 {
+		return config, fmt.Errorf("labels must not be empty")
+	}
+
 	return config, nil
 }
 
@@ -39,6 +48,9 @@ func matchLabels(labels []*gmail.Label, desired []string) []string {
 	var labelIds []string
 	for _, lab := range labels {
 		for _, desiredLabel := range desired {
+			if desiredLabel == "" {
+				continue
+			}
 			if lab.Name == desiredLabel {
 				labelIds = append(labelIds, lab.Id)
 				break
@@ -61,7 +73,7 @@ func scrapeMetrics(unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.Gaug
 	return nil
 }
 
-func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service, stopCh <-chan struct{}) {
+func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *prometheus.GaugeVec, labelIds []string, srv *gmail.Service, stopCh <-chan struct{}, scrapeErrors prometheus.Counter, scrapeSuccess prometheus.Counter) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
@@ -69,10 +81,21 @@ func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *p
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Printf("scraping %d labels\n", len(labelIds))
-				if err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv); err != nil {
-					fmt.Printf("%v\n", err)
-				}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							scrapeErrors.Inc()
+							fmt.Printf("panic in scrapeMetrics: %v\n", r)
+						}
+					}()
+					fmt.Printf("scraping %d labels\n", len(labelIds))
+					if err := scrapeMetrics(unreadGauge, totalGauge, labelIds, srv); err != nil {
+						fmt.Printf("%v\n", err)
+						scrapeErrors.Inc()
+					} else {
+						scrapeSuccess.Inc()
+					}
+				}()
 			case <-stopCh:
 				return
 			}
@@ -80,13 +103,59 @@ func recordMetrics(interval int, unreadGauge *prometheus.GaugeVec, totalGauge *p
 	}()
 }
 
-func newServer(registry *prometheus.Registry, addr string) *http.Server {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	return &http.Server{
-		Addr:    addr,
-		Handler: mux,
+var limiter = rate.NewLimiter(rate.Limit(10), 5)
+
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.Allow() {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+func readyHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Ready"))
+}
+
+func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
+	if val := os.Getenv(key); val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			return d
+		}
+		log.Printf("Invalid duration for %s, using default %v", key, defaultVal)
 	}
+	return defaultVal
+}
+
+func newServer(registry *prometheus.Registry, addr string, readTimeout, writeTimeout, idleTimeout time.Duration) *http.Server {
+	mux := http.NewServeMux()
+	metricsHandler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	mux.Handle("/metrics", rateLimitMiddleware(metricsHandler))
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/ready", readyHandler)
+	return &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  idleTimeout,
+	}
+}
+
+func isLocalhost(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func run(configPath, credentialsPath string, srvFn func(string) (*gmail.Service, error)) error {
@@ -121,19 +190,38 @@ func run(configPath, credentialsPath string, srvFn func(string) (*gmail.Service,
 		},
 		[]string{"Label"},
 	)
+	scrapeErrors := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gmail_scrape_errors_total",
+			Help: "Total number of Gmail scrape errors",
+		},
+	)
+	scrapeSuccess := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gmail_scrape_success_total",
+			Help: "Total number of successful Gmail scrapes",
+		},
+	)
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(unreadGauge, totalGauge)
+	registry.MustRegister(unreadGauge, totalGauge, scrapeErrors, scrapeSuccess)
 
 	stopCh := make(chan struct{})
-	recordMetrics(config.Interval, unreadGauge, totalGauge, labelIds, srv, stopCh)
+	recordMetrics(config.Interval, unreadGauge, totalGauge, labelIds, srv, stopCh, scrapeErrors, scrapeSuccess)
 
-	addr := ":2112"
+	addr := "127.0.0.1:2112"
 	if envAddr := os.Getenv("LISTEN_ADDRESS"); envAddr != "" {
 		addr = envAddr
+		if !isLocalhost(addr) {
+			log.Printf("WARNING: LISTEN_ADDRESS %s exposes metrics on a non-localhost interface", addr)
+		}
 	}
 
-	server := newServer(registry, addr)
-	fmt.Printf("http://localhost%s/metrics\n", addr)
+	readTimeout := getEnvDuration("HTTP_READ_TIMEOUT", 15*time.Second)
+	writeTimeout := getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second)
+	idleTimeout := getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second)
+
+	server := newServer(registry, addr, readTimeout, writeTimeout, idleTimeout)
+	fmt.Printf("http://localhost%s/metrics\n", strings.TrimPrefix(addr, "127.0.0.1"))
 	log.Printf("Starting HTTP server on %s", addr)
 	return server.ListenAndServe()
 }

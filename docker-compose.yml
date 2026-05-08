@@ -1,4 +1,9 @@
-version: "3"
+version: "3.8"
+
+networks:
+  monitoring:
+    driver: bridge
+    internal: true
 
 volumes:
   prometheus_data: {}
@@ -10,30 +15,88 @@ services:
     build:
       context: .
     container_name: prometheus-gmail-exporter
+    networks:
+      - monitoring
+    environment:
+      - CONFIG_PATH=/app/config/config.yml
+      - GMAIL_CREDENTIALS_PATH=/app/secrets/credentials.json
+      - TOKEN_SECRET_PATH=/run/secrets/gmail_token
+      - LISTEN_ADDRESS=0.0.0.0:2112
     volumes:
-      - ./config:/app
-    ports:
-      - "2112:2112"
+      - ./config:/app/config:ro
+      - ./secrets:/app/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
     restart: always
 
   prometheus:
-    image: prom/prometheus:v2.31.1
-    volumes:
-    - ./prometheus:/etc/prometheus
-    - prometheus_data:/prometheus
-    command:
-    - '--config.file=/etc/prometheus/prometheus.yml'
-    - '--storage.tsdb.path=/prometheus'
-    - '--storage.tsdb.retention.time=365d'
-    - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-    - '--web.console.templates=/usr/share/prometheus/consoles'
+    image: prom/prometheus:v3.2.0
+    networks:
+      - monitoring
     ports:
-    - "9090:9090"
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=365d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.0.0
+    networks:
+      - monitoring
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
-      - ./grafana_data:/var/lib/grafana
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/log/grafana:noexec,nosuid,size=50m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 

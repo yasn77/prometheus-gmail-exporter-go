@@ -3,7 +3,7 @@
 ##
 ## Build
 ##
-FROM golang:1.17-buster AS build
+FROM golang:1.23-alpine AS build
 
 WORKDIR /app
 
@@ -13,12 +13,18 @@ RUN go mod download
 
 COPY *.go ./
 
-RUN go build -o /prometheus-gmail-exporter-go
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+    -o /prometheus-gmail-exporter-go
 
 ##
 ## Deploy
 ##
-FROM gcr.io/distroless/base-debian11
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
