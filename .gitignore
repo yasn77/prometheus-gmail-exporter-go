@@ -1,4 +1,51 @@
-/credentials.json
-/token.json
-/config
-/grafana_data
+# Credentials and tokens
+credentials.json
+token.json
+*.pem
+*.key
+*.crt
+*.p12
+
+# Config with secrets
+config.local.yml
+secrets/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+prometheus-gmail-exporter-go
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+coverage.out
+coverage.html
+*.cover
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Docker / runtime data
+config/
+grafana_data/
+prometheus_data/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
