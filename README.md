@@ -240,9 +240,26 @@ See the [Helm chart README](./helm/prometheus-gmail-exporter-go/README.md) for f
 9. For **Application type**, select **Desktop app**.
 10. Enter a name and click **Create**.
 11. Download the client credentials as `credentials.json`.
-12. Run the exporter locally once to perform the interactive OAuth flow. The exporter will prompt you to visit an authorisation URL and paste the authorisation code.
-13. After authorisation, the token is saved to `token.json`.
-14. For production deployments, use the `GMAIL_OAUTH_TOKEN` environment variable or a mounted secret via `TOKEN_SECRET_PATH` instead of the local `token.json` file.
+12. Run the exporter locally once to perform the interactive OAuth flow:
+
+    ```bash
+    ./prometheus-gmail-exporter-go
+    ```
+
+    The exporter will print an authorisation URL and start a temporary local HTTP server on your machine. Open the URL in your browser, sign in with the Google account you added as a test user, and grant access. After you authorise, the browser will redirect to a local address (`http://127.0.0.1:<port>`) and the exporter will automatically capture the authorisation code.
+
+    You will see:
+
+    ```
+    Open the following URL in your browser to authorize the application:
+    https://accounts.google.com/o/oauth2/auth?...
+
+    Waiting for authorization...
+    ```
+
+    Once complete, the token is saved to `token.json`.
+
+13. For production deployments, use the `GMAIL_OAUTH_TOKEN` environment variable or a mounted secret via `TOKEN_SECRET_PATH` instead of the local `token.json` file.
 
 ## Security Considerations
 
